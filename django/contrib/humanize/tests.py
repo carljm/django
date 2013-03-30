@@ -1,6 +1,13 @@
 from __future__ import unicode_literals
 import datetime
+from decimal import Decimal
 
+try:
+    import pytz
+except ImportError:
+    pytz = None
+
+from django.conf import settings
 from django.contrib.humanize.templatetags import humanize
 from django.template import Template, Context, defaultfilters
 from django.test import TestCase
@@ -10,6 +17,7 @@ from django.utils.timezone import utc
 from django.utils import translation
 from django.utils.translation import ugettext as _
 from django.utils import tzinfo
+from django.utils.unittest import skipIf
 
 
 # Mock out datetime in some tests so they don't fail occasionally when they
@@ -31,8 +39,6 @@ class MockDateTime(datetime.datetime):
 class HumanizeTests(TestCase):
 
     def humanize_tester(self, test_list, result_list, method):
-        # Using max below ensures we go through both lists
-        # However, if the lists are not equal length, this raises an exception
         for test_content, result in zip(test_list, result_list):
             t = Template('{%% load humanize %%}{{ test_content|%s }}' % method)
             rendered = t.render(Context(locals())).strip()
@@ -47,28 +53,31 @@ class HumanizeTests(TestCase):
                        '12th', '13th', '101st', '102nd', '103rd',
                        '111th', 'something else', None)
 
-        self.humanize_tester(test_list, result_list, 'ordinal')
+        with translation.override('en'):
+            self.humanize_tester(test_list, result_list, 'ordinal')
 
     def test_intcomma(self):
         test_list = (100, 1000, 10123, 10311, 1000000, 1234567.25,
-                     '100', '1000', '10123', '10311', '1000000', '1234567.1234567',
+                     '100', '1000', '10123', '10311', '1000000', '1234567.1234567', Decimal('1234567.1234567'),
                      None)
         result_list = ('100', '1,000', '10,123', '10,311', '1,000,000', '1,234,567.25',
-                       '100', '1,000', '10,123', '10,311', '1,000,000', '1,234,567.1234567',
+                       '100', '1,000', '10,123', '10,311', '1,000,000', '1,234,567.1234567', '1,234,567.1234567',
                      None)
 
-        self.humanize_tester(test_list, result_list, 'intcomma')
+        with translation.override('en'):
+            self.humanize_tester(test_list, result_list, 'intcomma')
 
     def test_l10n_intcomma(self):
         test_list = (100, 1000, 10123, 10311, 1000000, 1234567.25,
-                     '100', '1000', '10123', '10311', '1000000', '1234567.1234567',
+                     '100', '1000', '10123', '10311', '1000000', '1234567.1234567', Decimal('1234567.1234567'),
                      None)
         result_list = ('100', '1,000', '10,123', '10,311', '1,000,000', '1,234,567.25',
-                       '100', '1,000', '10,123', '10,311', '1,000,000', '1,234,567.1234567',
+                       '100', '1,000', '10,123', '10,311', '1,000,000', '1,234,567.1234567', '1,234,567.1234567',
                      None)
 
         with self.settings(USE_L10N=True, USE_THOUSAND_SEPARATOR=False):
-            self.humanize_tester(test_list, result_list, 'intcomma')
+            with translation.override('en'):
+                self.humanize_tester(test_list, result_list, 'intcomma')
 
     def test_intcomma_without_number_grouping(self):
         # Regression for #17414
@@ -85,7 +94,8 @@ class HumanizeTests(TestCase):
                        '1.0 billion', '2.0 billion', '6.0 trillion',
                        '1.3 quadrillion', '3.5 sextillion',
                        '8.1 decillion', None)
-        self.humanize_tester(test_list, result_list, 'intword')
+        with translation.override('en'):
+            self.humanize_tester(test_list, result_list, 'intword')
 
     def test_i18n_intcomma(self):
         test_list = (100, 1000, 10123, 10311, 1000000, 1234567.25,
@@ -110,8 +120,8 @@ class HumanizeTests(TestCase):
         test_list.append(None)
         result_list = ('one', 'two', 'three', 'four', 'five', 'six',
                        'seven', 'eight', 'nine', '10', None)
-
-        self.humanize_tester(test_list, result_list, 'apnumber')
+        with translation.override('en'):
+            self.humanize_tester(test_list, result_list, 'apnumber')
 
     def test_naturalday(self):
         today = datetime.date.today()
@@ -141,15 +151,18 @@ class HumanizeTests(TestCase):
         # As 24h of difference they will never be the same
         self.assertNotEqual(naturalday_one, naturalday_two)
 
+    @skipIf(settings.TIME_ZONE != "America/Chicago" and pytz is None,
+            "this test requires pytz when a non-default time zone is set")
     def test_naturalday_uses_localtime(self):
         # Regression for #18504
-        # This is 2012-03-08HT19:30:00-06:00 in Ameria/Chicago
+        # This is 2012-03-08HT19:30:00-06:00 in America/Chicago
         dt = datetime.datetime(2012, 3, 9, 1, 30, tzinfo=utc)
 
         orig_humanize_datetime, humanize.datetime = humanize.datetime, MockDateTime
         try:
-            with override_settings(USE_TZ=True):
-                self.humanize_tester([dt], ['yesterday'], 'naturalday')
+            with override_settings(TIME_ZONE="America/Chicago", USE_TZ=True):
+                with translation.override('en'):
+                    self.humanize_tester([dt], ['yesterday'], 'naturalday')
         finally:
             humanize.datetime = orig_humanize_datetime
 
@@ -210,8 +223,10 @@ class HumanizeTests(TestCase):
 
         orig_humanize_datetime, humanize.datetime = humanize.datetime, MockDateTime
         try:
-            self.humanize_tester(test_list, result_list, 'naturaltime')
-            with override_settings(USE_TZ=True):
-                self.humanize_tester(test_list, result_list_with_tz_support, 'naturaltime')
+            with translation.override('en'):
+                self.humanize_tester(test_list, result_list, 'naturaltime')
+                with override_settings(USE_TZ=True):
+                    self.humanize_tester(
+                        test_list, result_list_with_tz_support, 'naturaltime')
         finally:
             humanize.datetime = orig_humanize_datetime

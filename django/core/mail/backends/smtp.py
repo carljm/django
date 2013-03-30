@@ -1,12 +1,13 @@
 """SMTP email backend class."""
 import smtplib
-import socket
+import ssl
 import threading
 
 from django.conf import settings
 from django.core.mail.backends.base import BaseEmailBackend
 from django.core.mail.utils import DNS_NAME
 from django.core.mail.message import sanitize_address
+from django.utils.encoding import force_bytes
 
 
 class EmailBackend(BaseEmailBackend):
@@ -59,12 +60,15 @@ class EmailBackend(BaseEmailBackend):
 
     def close(self):
         """Closes the connection to the email server."""
+        if self.connection is None:
+            return
         try:
             try:
                 self.connection.quit()
-            except socket.sslerror:
+            except (ssl.SSLError, smtplib.SMTPServerDisconnected):
                 # This happens when calling quit() on a TLS connection
-                # sometimes.
+                # sometimes, or when the connection was already disconnected
+                # by the server.
                 self.connection.close()
             except:
                 if self.fail_silently:
@@ -102,9 +106,11 @@ class EmailBackend(BaseEmailBackend):
         from_email = sanitize_address(email_message.from_email, email_message.encoding)
         recipients = [sanitize_address(addr, email_message.encoding)
                       for addr in email_message.recipients()]
+        message = email_message.message()
+        charset = message.get_charset().get_output_charset() if message.get_charset() else 'utf-8'
         try:
             self.connection.sendmail(from_email, recipients,
-                    email_message.message().as_string())
+                    force_bytes(message.as_string(), charset))
         except:
             if not self.fail_silently:
                 raise

@@ -1,10 +1,11 @@
-from __future__ import absolute_import
+# -*- encoding: utf-8 -*-
+from __future__ import absolute_import, unicode_literals
 
 from datetime import datetime
 
 from django.contrib.gis.tests.utils import no_mysql, no_spatialite
 from django.contrib.gis.shortcuts import render_to_kmz
-from django.db.models import Count
+from django.db.models import Count, Min
 from django.test import TestCase
 
 from .models import City, PennsylvaniaCity, State, Truth
@@ -26,7 +27,7 @@ class GeoRegressionTests(TestCase):
 
     def test_kmz(self):
         "Testing `render_to_kmz` with non-ASCII data. See #11624."
-        name = '\xc3\x85land Islands'.decode('iso-8859-1')
+        name = "Åland Islands"
         places = [{'name' : name,
                   'description' : name,
                   'kml' : '<Point><coordinates>5.0,23.0</coordinates></Point>'
@@ -48,7 +49,8 @@ class GeoRegressionTests(TestCase):
         founded = datetime(1857, 5, 23)
         mansfield = PennsylvaniaCity.objects.create(name='Mansfield', county='Tioga', point='POINT(-77.071445 41.823881)',
                                                     founded=founded)
-        self.assertEqual(founded, PennsylvaniaCity.objects.dates('founded', 'day')[0])
+        self.assertEqual(founded, PennsylvaniaCity.objects.datetimes('founded', 'day')[0])
+        self.assertEqual(founded, PennsylvaniaCity.objects.aggregate(Min('founded'))['founded__min'])
 
     def test_empty_count(self):
          "Testing that PostGISAdapter.__eq__ does check empty strings. See #13670."

@@ -50,9 +50,9 @@ attribute easily tells us what and who each ticket is waiting on.
 
 Since a picture is worth a thousand words, let's start there:
 
-.. image:: /internals/_images/djangotickets.png
-   :height: 451
-   :width: 590
+.. image:: /internals/_images/triage_process.*
+   :height: 564
+   :width: 580
    :alt: Django's ticket triage workflow
 
 We've got two roles in this diagram:
@@ -170,15 +170,6 @@ tickets are uncommon and overall less useful since they don't describe
 concrete actionable issues. They are enhancement requests that we might
 consider adding someday to the framework if an excellent patch is submitted.
 These tickets are not a high priority.
-
-Fixed on a branch
-~~~~~~~~~~~~~~~~~
-
-Used to indicate that a ticket is resolved as part of a major body of work
-that will eventually be merged to trunk. Tickets in this stage generally
-don't need further work. This may happen in the case of major
-features/refactors in each release cycle, or as part of the annual Google
-Summer of Code efforts.
 
 Other triage attributes
 -----------------------

@@ -11,6 +11,7 @@ from django.db import models, DEFAULT_DB_ALIAS
 from django.utils.encoding import smart_text, is_protected_type
 from django.utils import six
 
+
 class Serializer(base.Serializer):
     """
     Serializes a QuerySet to basic Python objects.
@@ -72,6 +73,7 @@ class Serializer(base.Serializer):
     def getvalue(self):
         return self.objects
 
+
 def Deserializer(object_list, **options):
     """
     Deserialize simple Python objects back into Django ORM instances.
@@ -80,15 +82,23 @@ def Deserializer(object_list, **options):
     stream or a string) to the constructor
     """
     db = options.pop('using', DEFAULT_DB_ALIAS)
+    ignore = options.pop('ignorenonexistent', False)
+
     models.get_apps()
     for d in object_list:
         # Look up the model and starting build a dict of data for it.
         Model = _get_model(d["model"])
-        data = {Model._meta.pk.attname : Model._meta.pk.to_python(d["pk"])}
+        data = {Model._meta.pk.attname: Model._meta.pk.to_python(d.get("pk", None))}
         m2m_data = {}
+        model_fields = Model._meta.get_all_field_names()
 
         # Handle each field
         for (field_name, field_value) in six.iteritems(d["fields"]):
+
+            if ignore and field_name not in model_fields:
+                # skip fields no longer on model
+                continue
+
             if isinstance(field_value, str):
                 field_value = smart_text(field_value, options.get("encoding", settings.DEFAULT_CHARSET), strings_only=True)
 
@@ -133,7 +143,7 @@ def Deserializer(object_list, **options):
 
 def _get_model(model_identifier):
     """
-    Helper to look up a model from an "app_label.module_name" string.
+    Helper to look up a model from an "app_label.model_name" string.
     """
     try:
         Model = models.get_model(*model_identifier.split("."))

@@ -134,13 +134,13 @@ your settings::
 GeoDjango tests
 ===============
 
-.. versionchanged:: 1.3
-
 GeoDjango's test suite may be run in one of two ways, either by itself or
 with the rest of :ref:`Django's unit tests <running-unit-tests>`.
 
 Run only GeoDjango tests
 ------------------------
+
+.. class:: django.contrib.gis.tests.GeoDjangoTestSuiteRunner
 
 To run *only* the tests for GeoDjango, the :setting:`TEST_RUNNER`
 setting must be changed to use the

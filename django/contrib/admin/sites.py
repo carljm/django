@@ -2,14 +2,13 @@ from functools import update_wrapper
 from django.http import Http404, HttpResponseRedirect
 from django.contrib.admin import ModelAdmin, actions
 from django.contrib.admin.forms import AdminAuthenticationForm
-from django.contrib.auth import REDIRECT_FIELD_NAME
+from django.contrib.auth import logout as auth_logout, REDIRECT_FIELD_NAME
 from django.contrib.contenttypes import views as contenttype_views
 from django.views.decorators.csrf import csrf_protect
 from django.db.models.base import ModelBase
 from django.core.exceptions import ImproperlyConfigured
 from django.core.urlresolvers import reverse, NoReverseMatch
 from django.template.response import TemplateResponse
-from django.utils.safestring import mark_safe
 from django.utils import six
 from django.utils.text import capfirst
 from django.utils.translation import ugettext as _
@@ -18,11 +17,14 @@ from django.conf import settings
 
 LOGIN_FORM_KEY = 'this_is_the_login_form'
 
+
 class AlreadyRegistered(Exception):
     pass
 
+
 class NotRegistered(Exception):
     pass
+
 
 class AdminSite(object):
     """
@@ -41,7 +43,7 @@ class AdminSite(object):
     password_change_done_template = None
 
     def __init__(self, name='admin', app_name='admin'):
-        self._registry = {} # model_class class -> admin_class instance
+        self._registry = {}  # model_class class -> admin_class instance
         self.name = name
         self.app_name = app_name
         self._actions = {'delete_selected': actions.delete_selected}
@@ -80,20 +82,23 @@ class AdminSite(object):
             if model in self._registry:
                 raise AlreadyRegistered('The model %s is already registered' % model.__name__)
 
-            # If we got **options then dynamically construct a subclass of
-            # admin_class with those **options.
-            if options:
-                # For reasons I don't quite understand, without a __module__
-                # the created class appears to "live" in the wrong place,
-                # which causes issues later on.
-                options['__module__'] = __name__
-                admin_class = type("%sAdmin" % model.__name__, (admin_class,), options)
+            # Ignore the registration if the model has been
+            # swapped out.
+            if not model._meta.swapped:
+                # If we got **options then dynamically construct a subclass of
+                # admin_class with those **options.
+                if options:
+                    # For reasons I don't quite understand, without a __module__
+                    # the created class appears to "live" in the wrong place,
+                    # which causes issues later on.
+                    options['__module__'] = __name__
+                    admin_class = type("%sAdmin" % model.__name__, (admin_class,), options)
 
-            # Validate (which might be a no-op)
-            validate(admin_class, model)
+                # Validate (which might be a no-op)
+                validate(admin_class, model)
 
-            # Instantiate the admin class to save in the registry
-            self._registry[model] = admin_class(model, self)
+                # Instantiate the admin class to save in the registry
+                self._registry[model] = admin_class(model, self)
 
     def unregister(self, model_or_iterable):
         """
@@ -124,7 +129,7 @@ class AdminSite(object):
 
     def get_action(self, name):
         """
-        Explicitally get a registered global action wheather it's enabled or
+        Explicitly get a registered global action whether it's enabled or
         not. Raises KeyError for invalid names.
         """
         return self._global_actions[name]
@@ -188,6 +193,8 @@ class AdminSite(object):
         cacheable=True.
         """
         def inner(request, *args, **kwargs):
+            if LOGIN_FORM_KEY in request.POST and request.user.is_authenticated():
+                auth_logout(request)
             if not self.has_permission(request):
                 if request.path == reverse('admin:logout',
                                            current_app=self.name):
@@ -242,7 +249,7 @@ class AdminSite(object):
         # Add in each model's views.
         for model, model_admin in six.iteritems(self._registry):
             urlpatterns += patterns('',
-                url(r'^%s/%s/' % (model._meta.app_label, model._meta.module_name),
+                url(r'^%s/%s/' % (model._meta.app_label, model._meta.model_name),
                     include(model_admin.urls))
             )
         return urlpatterns
@@ -319,6 +326,7 @@ class AdminSite(object):
             REDIRECT_FIELD_NAME: request.get_full_path(),
         }
         context.update(extra_context or {})
+
         defaults = {
             'extra_context': context,
             'current_app': self.name,
@@ -345,9 +353,10 @@ class AdminSite(object):
                 # Check whether user has any perm for this module.
                 # If so, add the module to the model_list.
                 if True in perms.values():
-                    info = (app_label, model._meta.module_name)
+                    info = (app_label, model._meta.model_name)
                     model_dict = {
                         'name': capfirst(model._meta.verbose_name_plural),
+                        'object_name': model._meta.object_name,
                         'perms': perms,
                     }
                     if perms.get('change', False):
@@ -365,6 +374,7 @@ class AdminSite(object):
                     else:
                         app_dict[app_label] = {
                             'name': app_label.title(),
+                            'app_label': app_label,
                             'app_url': reverse('admin:app_list', kwargs={'app_label': app_label}, current_app=self.name),
                             'has_module_perms': has_module_perms,
                             'models': [model_dict],
@@ -383,9 +393,9 @@ class AdminSite(object):
             'app_list': app_list,
         }
         context.update(extra_context or {})
-        return TemplateResponse(request, [
-            self.index_template or 'admin/index.html',
-        ], context, current_app=self.name)
+        return TemplateResponse(request, self.index_template or
+                                'admin/index.html', context,
+                                current_app=self.name)
 
     def app_index(self, request, app_label, extra_context=None):
         user = request.user
@@ -399,9 +409,10 @@ class AdminSite(object):
                     # Check whether user has any perm for this module.
                     # If so, add the module to the model_list.
                     if True in perms.values():
-                        info = (app_label, model._meta.module_name)
+                        info = (app_label, model._meta.model_name)
                         model_dict = {
                             'name': capfirst(model._meta.verbose_name_plural),
+                            'object_name': model._meta.object_name,
                             'perms': perms,
                         }
                         if perms.get('change', False):
@@ -422,6 +433,7 @@ class AdminSite(object):
                             # information.
                             app_dict = {
                                 'name': app_label.title(),
+                                'app_label': app_label,
                                 'app_url': '',
                                 'has_module_perms': has_module_perms,
                                 'models': [model_dict],

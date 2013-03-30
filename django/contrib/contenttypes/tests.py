@@ -3,9 +3,10 @@ from __future__ import unicode_literals
 from django.db import models
 from django.contrib.contenttypes.models import ContentType
 from django.contrib.contenttypes.views import shortcut
-from django.contrib.sites.models import Site
+from django.contrib.sites.models import Site, get_current_site
 from django.http import HttpRequest, Http404
 from django.test import TestCase
+from django.test.utils import override_settings
 from django.utils.http import urlquote
 from django.utils import six
 from django.utils.encoding import python_2_unicode_compatible
@@ -203,6 +204,7 @@ class ContentTypesTests(TestCase):
         })
 
 
+    @override_settings(ALLOWED_HOSTS=['example.com'])
     def test_shortcut_view(self):
         """
         Check that the shortcut view (used for the admin "view on site"
@@ -219,9 +221,8 @@ class ContentTypesTests(TestCase):
         obj = FooWithUrl.objects.create(name="john")
 
         if Site._meta.installed:
-            current_site = Site.objects.get_current()
             response = shortcut(request, user_ct.id, obj.id)
-            self.assertEqual("http://%s/users/john/" % current_site.domain,
+            self.assertEqual("http://%s/users/john/" % get_current_site(request).domain,
                              response._headers.get("location")[1])
 
         Site._meta.installed = False

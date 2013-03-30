@@ -7,6 +7,7 @@ against request forgeries from other sites.
 from __future__ import unicode_literals
 
 import hashlib
+import logging
 import re
 import random
 
@@ -15,10 +16,10 @@ from django.core.urlresolvers import get_callable
 from django.utils.cache import patch_vary_headers
 from django.utils.encoding import force_text
 from django.utils.http import same_origin
-from django.utils.log import getLogger
 from django.utils.crypto import constant_time_compare, get_random_string
 
-logger = getLogger('django.request')
+
+logger = logging.getLogger('django.request')
 
 REASON_NO_REFERER = "Referer checking failed - no Referer."
 REASON_BAD_REFERER = "Referer checking failed - %s does not match %s."
@@ -40,10 +41,10 @@ def _get_new_csrf_key():
 
 def get_token(request):
     """
-    Returns the the CSRF token required for a POST form. The token is an
+    Returns the CSRF token required for a POST form. The token is an
     alphanumeric value.
 
-    A side effect of calling this function is to make the the csrf_protect
+    A side effect of calling this function is to make the csrf_protect
     decorator and the CsrfViewMiddleware add a CSRF cookie and a 'Vary: Cookie'
     header to the outgoing response.  For this reason, you may need to use this
     function lazily, as is done by the csrf context processor.
@@ -105,7 +106,7 @@ class CsrfViewMiddleware(object):
         if getattr(callback, 'csrf_exempt', False):
             return None
 
-        # Assume that anything not defined as 'safe' by RC2616 needs protection
+        # Assume that anything not defined as 'safe' by RFC2616 needs protection
         if request.method not in ('GET', 'HEAD', 'OPTIONS', 'TRACE'):
             if getattr(request, '_dont_enforce_csrf_checks', False):
                 # Mechanism to turn off CSRF checks for test suite.
@@ -209,7 +210,8 @@ class CsrfViewMiddleware(object):
                             max_age = 60 * 60 * 24 * 7 * 52,
                             domain=settings.CSRF_COOKIE_DOMAIN,
                             path=settings.CSRF_COOKIE_PATH,
-                            secure=settings.CSRF_COOKIE_SECURE
+                            secure=settings.CSRF_COOKIE_SECURE,
+                            httponly=settings.CSRF_COOKIE_HTTPONLY
                             )
         # Content varies with the CSRF cookie, so set the Vary header.
         patch_vary_headers(response, ('Cookie',))

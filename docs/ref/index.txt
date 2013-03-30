@@ -5,8 +5,7 @@ API Reference
 .. toctree::
    :maxdepth: 1
 
-   authbackends
-   class-based-views/index   
+   class-based-views/index
    clickjacking
    contrib/index
    databases
@@ -22,5 +21,8 @@ API Reference
    signals
    templates/index
    unicode
+   urlresolvers
+   urls
    utils
    validators
+   views

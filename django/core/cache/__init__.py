@@ -25,6 +25,8 @@ from django.core.cache.backends.base import (
     InvalidCacheBackendError, CacheKeyWarning, BaseCache)
 from django.core.exceptions import ImproperlyConfigured
 from django.utils import importlib
+from django.utils.module_loading import import_by_path
+
 
 __all__ = [
     'get_cache', 'cache', 'DEFAULT_CACHE_ALIAS'
@@ -86,15 +88,12 @@ def parse_backend_conf(backend, **kwargs):
     else:
         try:
             # Trying to import the given backend, in case it's a dotted path
-            mod_path, cls_name = backend.rsplit('.', 1)
-            mod = importlib.import_module(mod_path)
-            backend_cls = getattr(mod, cls_name)
-        except (AttributeError, ImportError, ValueError):
-            raise InvalidCacheBackendError("Could not find backend '%s'" % backend)
+            backend_cls = import_by_path(backend)
+        except ImproperlyConfigured as e:
+            raise InvalidCacheBackendError("Could not find backend '%s': %s" % (
+                backend, e))
         location = kwargs.pop('LOCATION', '')
         return backend, location, kwargs
-    raise InvalidCacheBackendError(
-        "Couldn't find a cache backend named '%s'" % backend)
 
 def get_cache(backend, **kwargs):
     """
@@ -128,19 +127,15 @@ def get_cache(backend, **kwargs):
             backend_cls = mod.CacheClass
         else:
             backend, location, params = parse_backend_conf(backend, **kwargs)
-            mod_path, cls_name = backend.rsplit('.', 1)
-            mod = importlib.import_module(mod_path)
-            backend_cls = getattr(mod, cls_name)
-    except (AttributeError, ImportError) as e:
+            backend_cls = import_by_path(backend)
+    except (AttributeError, ImportError, ImproperlyConfigured) as e:
         raise InvalidCacheBackendError(
             "Could not find backend '%s': %s" % (backend, e))
     cache = backend_cls(location, params)
     # Some caches -- python-memcached in particular -- need to do a cleanup at the
-    # end of a request cycle. If the cache provides a close() method, wire it up
-    # here.
-    if hasattr(cache, 'close'):
-        signals.request_finished.connect(cache.close)
+    # end of a request cycle. If not implemented in a particular backend
+    # cache.close is a no-op
+    signals.request_finished.connect(cache.close)
     return cache
 
 cache = get_cache(DEFAULT_CACHE_ALIAS)
-

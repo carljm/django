@@ -36,7 +36,7 @@ class StrAndUnicode(object):
     def __init__(self, *args, **kwargs):
         warnings.warn("StrAndUnicode is deprecated. Define a __str__ method "
                       "and apply the @python_2_unicode_compatible decorator "
-                      "instead.", PendingDeprecationWarning, stacklevel=2)
+                      "instead.", DeprecationWarning, stacklevel=2)
         super(StrAndUnicode, self).__init__(*args, **kwargs)
 
     if six.PY3:
@@ -98,25 +98,13 @@ def force_text(s, encoding='utf-8', strings_only=False, errors='strict'):
             if hasattr(s, '__unicode__'):
                 s = s.__unicode__()
             else:
-                try:
-                    if six.PY3:
-                        if isinstance(s, bytes):
-                            s = six.text_type(s, encoding, errors)
-                        else:
-                            s = six.text_type(s)
+                if six.PY3:
+                    if isinstance(s, bytes):
+                        s = six.text_type(s, encoding, errors)
                     else:
-                        s = six.text_type(bytes(s), encoding, errors)
-                except UnicodeEncodeError:
-                    if not isinstance(s, Exception):
-                        raise
-                    # If we get to here, the caller has passed in an Exception
-                    # subclass populated with non-ASCII data without special
-                    # handling to display as a string. We need to handle this
-                    # without raising a further exception. We do an
-                    # approximation to what the Exception's standard str()
-                    # output should be.
-                    s = ' '.join([force_text(arg, encoding, strings_only,
-                            errors) for arg in s])
+                        s = six.text_type(s)
+                else:
+                    s = six.text_type(bytes(s), encoding, errors)
         else:
             # Note: We use .decode() here, instead of six.text_type(s, encoding,
             # errors), so that if s is a SafeBytes, it ends up being a
@@ -154,6 +142,8 @@ def force_bytes(s, encoding='utf-8', strings_only=False, errors='strict'):
 
     If strings_only is True, don't convert (some) non-string-like objects.
     """
+    if isinstance(s, six.memoryview):
+        s = bytes(s)
     if isinstance(s, bytes):
         if encoding == 'utf-8':
             return s
@@ -228,7 +218,7 @@ def iri_to_uri(iri):
     return quote(force_bytes(iri), safe=b"/#%[]=:;$&()+,!?*@'~")
 
 def filepath_to_uri(path):
-    """Convert an file system path to a URI portion that is suitable for
+    """Convert a file system path to a URI portion that is suitable for
     inclusion in a URL.
 
     We are assuming input is either UTF-8 or unicode already.
@@ -244,13 +234,19 @@ def filepath_to_uri(path):
         return path
     # I know about `os.sep` and `os.altsep` but I want to leave
     # some flexibility for hardcoding separators.
-    return quote(force_bytes(path.replace("\\", "/")), safe=b"/~!*()'")
+    return quote(force_bytes(path).replace(b"\\", b"/"), safe=b"/~!*()'")
 
-# The encoding of the default system locale but falls back to the
-# given fallback encoding if the encoding is unsupported by python or could
-# not be determined.  See tickets #10335 and #5846
-try:
-    DEFAULT_LOCALE_ENCODING = locale.getdefaultlocale()[1] or 'ascii'
-    codecs.lookup(DEFAULT_LOCALE_ENCODING)
-except:
-    DEFAULT_LOCALE_ENCODING = 'ascii'
+def get_system_encoding():
+    """
+    The encoding of the default system locale but falls back to the given
+    fallback encoding if the encoding is unsupported by python or could
+    not be determined.  See tickets #10335 and #5846
+    """
+    try:
+        encoding = locale.getdefaultlocale()[1] or 'ascii'
+        codecs.lookup(encoding)
+    except Exception:
+        encoding = 'ascii'
+    return encoding
+
+DEFAULT_LOCALE_ENCODING = get_system_encoding()

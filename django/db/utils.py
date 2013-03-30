@@ -1,22 +1,109 @@
+from functools import wraps
 import os
+import pkgutil
 from threading import local
+import warnings
 
 from django.conf import settings
 from django.core.exceptions import ImproperlyConfigured
 from django.utils.importlib import import_module
+from django.utils.module_loading import import_by_path
+from django.utils._os import upath
 from django.utils import six
 
 
 DEFAULT_DB_ALIAS = 'default'
 
-# Define some exceptions that mirror the PEP249 interface.
-# We will rethrow any backend-specific errors using these
-# common wrappers
-class DatabaseError(Exception):
+
+class Error(Exception if six.PY3 else StandardError):
     pass
+
+
+class InterfaceError(Error):
+    pass
+
+
+class DatabaseError(Error):
+    pass
+
+
+class DataError(DatabaseError):
+    pass
+
+
+class OperationalError(DatabaseError):
+    pass
+
 
 class IntegrityError(DatabaseError):
     pass
+
+
+class InternalError(DatabaseError):
+    pass
+
+
+class ProgrammingError(DatabaseError):
+    pass
+
+
+class NotSupportedError(DatabaseError):
+    pass
+
+
+class DatabaseErrorWrapper(object):
+    """
+    Context manager and decorator that re-throws backend-specific database
+    exceptions using Django's common wrappers.
+    """
+
+    def __init__(self, wrapper):
+        """
+        wrapper is a database wrapper.
+
+        It must have a Database attribute defining PEP-249 exceptions.
+        """
+        self.wrapper = wrapper
+
+    def __enter__(self):
+        pass
+
+    def __exit__(self, exc_type, exc_value, traceback):
+        if exc_type is None:
+            return
+        for dj_exc_type in (
+                DataError,
+                OperationalError,
+                IntegrityError,
+                InternalError,
+                ProgrammingError,
+                NotSupportedError,
+                DatabaseError,
+                InterfaceError,
+                Error,
+            ):
+            db_exc_type = getattr(self.wrapper.Database, dj_exc_type.__name__)
+            if issubclass(exc_type, db_exc_type):
+                # Under Python 2.6, exc_value can still be a string.
+                try:
+                    args = tuple(exc_value.args)
+                except AttributeError:
+                    args = (exc_value,)
+                dj_exc_value = dj_exc_type(*args)
+                if six.PY3:
+                    dj_exc_value.__cause__ = exc_value
+                # Only set the 'errors_occurred' flag for errors that may make
+                # the connection unusable.
+                if dj_exc_type not in (DataError, IntegrityError):
+                    self.wrapper.errors_occurred = True
+                six.reraise(dj_exc_type, dj_exc_value, traceback)
+
+    def __call__(self, func):
+        @wraps(func)
+        def inner(*args, **kwargs):
+            with self:
+                return func(*args, **kwargs)
+        return inner
 
 
 def load_backend(backend_name):
@@ -26,29 +113,20 @@ def load_backend(backend_name):
     except ImportError as e_user:
         # The database backend wasn't found. Display a helpful error message
         # listing all possible (built-in) database backends.
-        backend_dir = os.path.join(os.path.dirname(__file__), 'backends')
+        backend_dir = os.path.join(os.path.dirname(upath(__file__)), 'backends')
         try:
-            available_backends = [f for f in os.listdir(backend_dir)
-                    if os.path.isdir(os.path.join(backend_dir, f))
-                    and not f.startswith('.')]
+            builtin_backends = [
+                name for _, name, ispkg in pkgutil.iter_modules([backend_dir])
+                if ispkg and name != 'dummy']
         except EnvironmentError:
-            available_backends = []
-        full_notation = backend_name.startswith('django.db.backends.')
-        if full_notation:
-            backend_name = backend_name[19:] # See #15621.
-        if backend_name not in available_backends:
-            backend_reprs = map(repr, sorted(available_backends))
+            builtin_backends = []
+        if backend_name not in ['django.db.backends.%s' % b for b in
+                                builtin_backends]:
+            backend_reprs = map(repr, sorted(builtin_backends))
             error_msg = ("%r isn't an available database backend.\n"
-                         "Try using django.db.backends.XXX, where XXX "
+                         "Try using 'django.db.backends.XXX', where XXX "
                          "is one of:\n    %s\nError was: %s" %
                          (backend_name, ", ".join(backend_reprs), e_user))
-            raise ImproperlyConfigured(error_msg)
-        elif not full_notation:
-            # user tried to use the old notation for the database backend
-            error_msg = ("%r isn't an available database backend.\n"
-                         "Try using django.db.backends.%s instead.\n"
-                         "Error was: %s" %
-                         (backend_name, backend_name, e_user))
             raise ImproperlyConfigured(error_msg)
         else:
             # If there's some other error, this must be an error in Django
@@ -61,7 +139,14 @@ class ConnectionDoesNotExist(Exception):
 
 class ConnectionHandler(object):
     def __init__(self, databases):
-        self.databases = databases
+        if not databases:
+            self.databases = {
+                DEFAULT_DB_ALIAS: {
+                    'ENGINE': 'django.db.backends.dummy',
+                },
+            }
+        else:
+            self.databases = databases
         self._connections = local()
 
     def ensure_defaults(self, alias):
@@ -74,9 +159,17 @@ class ConnectionHandler(object):
         except KeyError:
             raise ConnectionDoesNotExist("The connection %s doesn't exist" % alias)
 
+        conn.setdefault('ATOMIC_REQUESTS', False)
+        if settings.TRANSACTIONS_MANAGED:
+            warnings.warn(
+                "TRANSACTIONS_MANAGED is deprecated. Use AUTOCOMMIT instead.",
+                PendingDeprecationWarning, stacklevel=2)
+            conn.setdefault('AUTOCOMMIT', False)
+        conn.setdefault('AUTOCOMMIT', True)
         conn.setdefault('ENGINE', 'django.db.backends.dummy')
         if conn['ENGINE'] == 'django.db.backends.' or not conn['ENGINE']:
             conn['ENGINE'] = 'django.db.backends.dummy'
+        conn.setdefault('CONN_MAX_AGE', 600)
         conn.setdefault('OPTIONS', {})
         conn.setdefault('TIME_ZONE', 'UTC' if settings.USE_TZ else settings.TIME_ZONE)
         for setting in ['NAME', 'USER', 'PASSWORD', 'HOST', 'PORT']:
@@ -98,6 +191,9 @@ class ConnectionHandler(object):
     def __setitem__(self, key, value):
         setattr(self._connections, key, value)
 
+    def __delitem__(self, key):
+        delattr(self._connections, key)
+
     def __iter__(self):
         return iter(self.databases)
 
@@ -110,17 +206,7 @@ class ConnectionRouter(object):
         self.routers = []
         for r in routers:
             if isinstance(r, six.string_types):
-                try:
-                    module_name, klass_name = r.rsplit('.', 1)
-                    module = import_module(module_name)
-                except ImportError as e:
-                    raise ImproperlyConfigured('Error importing database router %s: "%s"' % (klass_name, e))
-                try:
-                    router_class = getattr(module, klass_name)
-                except AttributeError:
-                    raise ImproperlyConfigured('Module "%s" does not define a database router name "%s"' % (module, klass_name))
-                else:
-                    router = router_class()
+                router = import_by_path(r)()
             else:
                 router = r
             self.routers.append(router)

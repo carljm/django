@@ -24,7 +24,7 @@ capfirst = allow_lazy(capfirst, six.text_type)
 
 # Set up regular expressions
 re_words = re.compile(r'&.*?;|<.*?>|(\w[\w-]*)', re.U|re.S)
-re_tag = re.compile(r'<(/)?([^ ]+?)(?: (/)| .*?)?>', re.S)
+re_tag = re.compile(r'<(/)?([^ ]+?)(?:(\s*/)| .*?)?>', re.S)
 
 
 def wrap(text, width):
@@ -209,20 +209,6 @@ class Truncator(SimpleLazyObject):
         # Return string
         return out
 
-def truncate_words(s, num, end_text='...'):
-    warnings.warn('This function has been deprecated. Use the Truncator class '
-        'in django.utils.text instead.', category=DeprecationWarning)
-    truncate = end_text and ' %s' % end_text or ''
-    return Truncator(s).words(num, truncate=truncate)
-truncate_words = allow_lazy(truncate_words, six.text_type)
-
-def truncate_html_words(s, num, end_text='...'):
-    warnings.warn('This function has been deprecated. Use the Truncator class '
-        'in django.utils.text instead.', category=DeprecationWarning)
-    truncate = end_text and ' %s' % end_text or ''
-    return Truncator(s).words(num, truncate=truncate, html=True)
-truncate_html_words = allow_lazy(truncate_html_words, six.text_type)
-
 def get_valid_filename(s):
     """
     Returns the given string converted to a string that can be used for a clean
@@ -287,6 +273,37 @@ def compress_string(s):
     zfile.write(s)
     zfile.close()
     return zbuf.getvalue()
+
+class StreamingBuffer(object):
+    def __init__(self):
+        self.vals = []
+
+    def write(self, val):
+        self.vals.append(val)
+
+    def read(self):
+        ret = b''.join(self.vals)
+        self.vals = []
+        return ret
+
+    def flush(self):
+        return
+
+    def close(self):
+        return
+
+# Like compress_string, but for iterators of strings.
+def compress_sequence(sequence):
+    buf = StreamingBuffer()
+    zfile = GzipFile(mode='wb', compresslevel=6, fileobj=buf)
+    # Output headers...
+    yield buf.read()
+    for item in sequence:
+        zfile.write(item)
+        zfile.flush()
+        yield buf.read()
+    zfile.close()
+    yield buf.read()
 
 ustring_re = re.compile("([\u0080-\uffff])")
 

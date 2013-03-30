@@ -1,5 +1,5 @@
 [main]
-host = https://www.transifex.net
+host = https://www.transifex.com
 lang_map = sr@latin:sr_Latn
 
 [django.core]
@@ -55,11 +55,6 @@ source_lang = en
 [django.contrib-humanize]
 file_filter = django/contrib/humanize/locale/<lang>/LC_MESSAGES/django.po
 source_file = django/contrib/humanize/locale/en/LC_MESSAGES/django.po
-source_lang = en
-
-[django.contrib-localflavor]
-file_filter = django/contrib/localflavor/locale/<lang>/LC_MESSAGES/django.po
-source_file = django/contrib/localflavor/locale/en/LC_MESSAGES/django.po
 source_lang = en
 
 [django.contrib-messages]

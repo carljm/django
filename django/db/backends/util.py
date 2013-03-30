@@ -3,15 +3,15 @@ from __future__ import unicode_literals
 import datetime
 import decimal
 import hashlib
+import logging
 from time import time
 
 from django.conf import settings
 from django.utils.encoding import force_bytes
-from django.utils.log import getLogger
 from django.utils.timezone import utc
 
 
-logger = getLogger('django.db.backends')
+logger = logging.getLogger('django.db.backends')
 
 
 class CursorWrapper(object):
@@ -19,16 +19,15 @@ class CursorWrapper(object):
         self.cursor = cursor
         self.db = db
 
-    def set_dirty(self):
-        if self.db.is_managed():
-            self.db.set_dirty()
-
     def __getattr__(self, attr):
-        self.set_dirty()
-        if attr in self.__dict__:
-            return self.__dict__[attr]
+        if attr in ('execute', 'executemany', 'callproc'):
+            self.db.set_dirty()
+        cursor_attr = getattr(self.cursor, attr)
+        if attr in ('callproc', 'close', 'execute', 'executemany',
+                    'fetchone', 'fetchmany', 'fetchall', 'nextset'):
+            return self.db.wrap_database_errors()(cursor_attr)
         else:
-            return getattr(self.cursor, attr)
+            return cursor_attr
 
     def __iter__(self):
         return iter(self.cursor)
@@ -36,11 +35,15 @@ class CursorWrapper(object):
 
 class CursorDebugWrapper(CursorWrapper):
 
-    def execute(self, sql, params=()):
-        self.set_dirty()
+    def execute(self, sql, params=None):
+        self.db.set_dirty()
         start = time()
         try:
-            return self.cursor.execute(sql, params)
+            with self.db.wrap_database_errors():
+                if params is None:
+                    # params default might be backend specific
+                    return self.cursor.execute(sql)
+                return self.cursor.execute(sql, params)
         finally:
             stop = time()
             duration = stop - start
@@ -54,10 +57,11 @@ class CursorDebugWrapper(CursorWrapper):
             )
 
     def executemany(self, sql, param_list):
-        self.set_dirty()
+        self.db.set_dirty()
         start = time()
         try:
-            return self.cursor.executemany(sql, param_list)
+            with self.db.wrap_database_errors():
+                return self.cursor.executemany(sql, param_list)
         finally:
             stop = time()
             duration = stop - start

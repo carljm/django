@@ -1,21 +1,21 @@
 from __future__ import unicode_literals
 
+from copy import copy
 import difflib
+import errno
+from functools import wraps
 import json
 import os
 import re
 import sys
-from copy import copy
-from functools import wraps
 try:
     from urllib.parse import urlsplit, urlunsplit
 except ImportError:     # Python 2
     from urlparse import urlsplit, urlunsplit
-from xml.dom.minidom import parseString, Node
 import select
 import socket
 import threading
-import errno
+import warnings
 
 from django.conf import settings
 from django.contrib.staticfiles.handlers import StaticFilesHandler
@@ -24,34 +24,33 @@ from django.core.exceptions import ValidationError, ImproperlyConfigured
 from django.core.handlers.wsgi import WSGIHandler
 from django.core.management import call_command
 from django.core.management.color import no_style
-from django.core.signals import request_started
 from django.core.servers.basehttp import (WSGIRequestHandler, WSGIServer,
     WSGIServerException)
-from django.core.urlresolvers import clear_url_caches
-from django.core.validators import EMPTY_VALUES
-from django.db import (transaction, connection, connections, DEFAULT_DB_ALIAS,
-    reset_queries)
+from django.core.urlresolvers import clear_url_caches, set_urlconf
+from django.db import connection, connections, DEFAULT_DB_ALIAS, transaction
 from django.forms.fields import CharField
 from django.http import QueryDict
 from django.test import _doctest as doctest
 from django.test.client import Client
 from django.test.html import HTMLParseError, parse_html
 from django.test.signals import template_rendered
-from django.test.utils import (get_warnings_state, restore_warnings_state,
-    override_settings)
-from django.test.utils import ContextList
-from django.utils import unittest as ut2
+from django.test.utils import (CaptureQueriesContext, ContextList,
+    override_settings, compare_xml, strip_quotes)
+from django.utils import six, unittest as ut2
 from django.utils.encoding import force_text
-from django.utils import six
+from django.utils.unittest import skipIf # Imported here for backward compatibility
 from django.utils.unittest.util import safe_repr
 from django.views.static import serve
+
 
 __all__ = ('DocTestRunner', 'OutputChecker', 'TestCase', 'TransactionTestCase',
            'SimpleTestCase', 'skipIfDBFeature', 'skipUnlessDBFeature')
 
+
 normalize_long_ints = lambda s: re.sub(r'(?<![\w])(\d+)L(?![\w])', '\\1', s)
 normalize_decimals = lambda s: re.sub(r"Decimal\('(\d+(\.\d*)?)'\)",
                                 lambda m: "Decimal(\"%s\")" % m.groups()[0], s)
+
 
 def to_list(value):
     """
@@ -68,7 +67,7 @@ real_commit = transaction.commit
 real_rollback = transaction.rollback
 real_enter_transaction_management = transaction.enter_transaction_management
 real_leave_transaction_management = transaction.leave_transaction_management
-real_managed = transaction.managed
+real_abort = transaction.abort
 
 def nop(*args, **kwargs):
     return
@@ -78,14 +77,14 @@ def disable_transaction_methods():
     transaction.rollback = nop
     transaction.enter_transaction_management = nop
     transaction.leave_transaction_management = nop
-    transaction.managed = nop
+    transaction.abort = nop
 
 def restore_transaction_methods():
     transaction.commit = real_commit
     transaction.rollback = real_rollback
     transaction.enter_transaction_management = real_enter_transaction_management
     transaction.leave_transaction_management = real_leave_transaction_management
-    transaction.managed = real_managed
+    transaction.abort = real_abort
 
 
 def assert_and_parse_html(self, html, user_msg, msg):
@@ -132,70 +131,16 @@ class OutputChecker(doctest.OutputChecker):
             optionflags)
 
     def check_output_xml(self, want, got, optionsflags):
-        """Tries to do a 'xml-comparision' of want and got.  Plain string
-        comparision doesn't always work because, for example, attribute
-        ordering should not be important.
-
-        Based on http://codespeak.net/svn/lxml/trunk/src/lxml/doctestcompare.py
-        """
-        _norm_whitespace_re = re.compile(r'[ \t\n][ \t\n]+')
-        def norm_whitespace(v):
-            return _norm_whitespace_re.sub(' ', v)
-
-        def child_text(element):
-            return ''.join([c.data for c in element.childNodes
-                            if c.nodeType == Node.TEXT_NODE])
-
-        def children(element):
-            return [c for c in element.childNodes
-                    if c.nodeType == Node.ELEMENT_NODE]
-
-        def norm_child_text(element):
-            return norm_whitespace(child_text(element))
-
-        def attrs_dict(element):
-            return dict(element.attributes.items())
-
-        def check_element(want_element, got_element):
-            if want_element.tagName != got_element.tagName:
-                return False
-            if norm_child_text(want_element) != norm_child_text(got_element):
-                return False
-            if attrs_dict(want_element) != attrs_dict(got_element):
-                return False
-            want_children = children(want_element)
-            got_children = children(got_element)
-            if len(want_children) != len(got_children):
-                return False
-            for want, got in zip(want_children, got_children):
-                if not check_element(want, got):
-                    return False
-            return True
-
-        want, got = self._strip_quotes(want, got)
-        want = want.replace('\\n','\n')
-        got = got.replace('\\n','\n')
-
-        # If the string is not a complete xml document, we may need to add a
-        # root element. This allow us to compare fragments, like "<foo/><bar/>"
-        if not want.startswith('<?xml'):
-            wrapper = '<root>%s</root>'
-            want = wrapper % want
-            got = wrapper % got
-
-        # Parse the want and got strings, and compare the parsings.
         try:
-            want_root = parseString(want).firstChild
-            got_root = parseString(got).firstChild
+            return compare_xml(want, got)
         except Exception:
             return False
-        return check_element(want_root, got_root)
 
     def check_output_json(self, want, got, optionsflags):
         """
         Tries to compare want and got as if they were JSON-encoded data
         """
-        want, got = self._strip_quotes(want, got)
+        want, got = strip_quotes(want, got)
         try:
             want_json = json.loads(want)
             got_json = json.loads(got)
@@ -203,74 +148,24 @@ class OutputChecker(doctest.OutputChecker):
             return False
         return want_json == got_json
 
-    def _strip_quotes(self, want, got):
-        """
-        Strip quotes of doctests output values:
-
-        >>> o = OutputChecker()
-        >>> o._strip_quotes("'foo'")
-        "foo"
-        >>> o._strip_quotes('"foo"')
-        "foo"
-        """
-        def is_quoted_string(s):
-            s = s.strip()
-            return (len(s) >= 2
-                    and s[0] == s[-1]
-                    and s[0] in ('"', "'"))
-
-        def is_quoted_unicode(s):
-            s = s.strip()
-            return (len(s) >= 3
-                    and s[0] == 'u'
-                    and s[1] == s[-1]
-                    and s[1] in ('"', "'"))
-
-        if is_quoted_string(want) and is_quoted_string(got):
-            want = want.strip()[1:-1]
-            got = got.strip()[1:-1]
-        elif is_quoted_unicode(want) and is_quoted_unicode(got):
-            want = want.strip()[2:-1]
-            got = got.strip()[2:-1]
-        return want, got
-
 
 class DocTestRunner(doctest.DocTestRunner):
     def __init__(self, *args, **kwargs):
         doctest.DocTestRunner.__init__(self, *args, **kwargs)
         self.optionflags = doctest.ELLIPSIS
 
-    def report_unexpected_exception(self, out, test, example, exc_info):
-        doctest.DocTestRunner.report_unexpected_exception(self, out, test,
-                                                          example, exc_info)
-        # Rollback, in case of database errors. Otherwise they'd have
-        # side effects on other tests.
-        for conn in connections:
-            transaction.rollback_unless_managed(using=conn)
 
-
-class _AssertNumQueriesContext(object):
+class _AssertNumQueriesContext(CaptureQueriesContext):
     def __init__(self, test_case, num, connection):
         self.test_case = test_case
         self.num = num
-        self.connection = connection
-
-    def __enter__(self):
-        self.old_debug_cursor = self.connection.use_debug_cursor
-        self.connection.use_debug_cursor = True
-        self.starting_queries = len(self.connection.queries)
-        request_started.disconnect(reset_queries)
-        return self
+        super(_AssertNumQueriesContext, self).__init__(connection)
 
     def __exit__(self, exc_type, exc_value, traceback):
-        self.connection.use_debug_cursor = self.old_debug_cursor
-        request_started.connect(reset_queries)
+        super(_AssertNumQueriesContext, self).__exit__(exc_type, exc_value, traceback)
         if exc_type is not None:
             return
-
-        final_queries = len(self.connection.queries)
-        executed = final_queries - self.starting_queries
-
+        executed = len(self)
         self.test_case.assertEqual(
             executed, self.num, "%d queries executed, %d expected" % (
                 executed, self.num
@@ -325,18 +220,59 @@ class _AssertTemplateNotUsedContext(_AssertTemplateUsedContext):
 
 
 class SimpleTestCase(ut2.TestCase):
+
+    _warn_txt = ("save_warnings_state/restore_warnings_state "
+        "django.test.*TestCase methods are deprecated. Use Python's "
+        "warnings.catch_warnings context manager instead.")
+
+    def __call__(self, result=None):
+        """
+        Wrapper around default __call__ method to perform common Django test
+        set up. This means that user-defined Test Cases aren't required to
+        include a call to super().setUp().
+        """
+        testMethod = getattr(self, self._testMethodName)
+        skipped = (getattr(self.__class__, "__unittest_skip__", False) or
+            getattr(testMethod, "__unittest_skip__", False))
+
+        if not skipped:
+            try:
+                self._pre_setup()
+            except (KeyboardInterrupt, SystemExit):
+                raise
+            except Exception:
+                result.addError(self, sys.exc_info())
+                return
+        super(SimpleTestCase, self).__call__(result)
+        if not skipped:
+            try:
+                self._post_teardown()
+            except (KeyboardInterrupt, SystemExit):
+                raise
+            except Exception:
+                result.addError(self, sys.exc_info())
+                return
+
+    def _pre_setup(self):
+        pass
+
+    def _post_teardown(self):
+        pass
+
     def save_warnings_state(self):
         """
         Saves the state of the warnings module
         """
-        self._warnings_state = get_warnings_state()
+        warnings.warn(self._warn_txt, DeprecationWarning, stacklevel=2)
+        self._warnings_state = warnings.filters[:]
 
     def restore_warnings_state(self):
         """
         Restores the state of the warnings module to the state
         saved by save_warnings_state()
         """
-        restore_warnings_state(self._warnings_state)
+        warnings.warn(self._warn_txt, DeprecationWarning, stacklevel=2)
+        warnings.filters = self._warnings_state[:]
 
     def settings(self, **kwargs):
         """
@@ -374,7 +310,7 @@ class SimpleTestCase(ut2.TestCase):
                     raised error messages.
             field_args: the args passed to instantiate the field
             field_kwargs: the kwargs passed to instantiate the field
-            empty_value: the expected clean output for inputs in EMPTY_VALUES
+            empty_value: the expected clean output for inputs in empty_values
 
         """
         if field_args is None:
@@ -399,7 +335,7 @@ class SimpleTestCase(ut2.TestCase):
             self.assertEqual(context_manager.exception.messages, errors)
         # test required inputs
         error_required = [force_text(required.error_messages['required'])]
-        for e in EMPTY_VALUES:
+        for e in required.empty_values:
             with self.assertRaises(ValidationError) as context_manager:
                 required.clean(e)
             self.assertEqual(context_manager.exception.messages,
@@ -443,6 +379,64 @@ class SimpleTestCase(ut2.TestCase):
                 safe_repr(dom1, True), safe_repr(dom2, True))
             self.fail(self._formatMessage(msg, standardMsg))
 
+    def assertInHTML(self, needle, haystack, count = None, msg_prefix=''):
+        needle = assert_and_parse_html(self, needle, None,
+            'First argument is not valid HTML:')
+        haystack = assert_and_parse_html(self, haystack, None,
+            'Second argument is not valid HTML:')
+        real_count = haystack.count(needle)
+        if count is not None:
+            self.assertEqual(real_count, count,
+                msg_prefix + "Found %d instances of '%s' in response"
+                " (expected %d)" % (real_count, needle, count))
+        else:
+            self.assertTrue(real_count != 0,
+                msg_prefix + "Couldn't find '%s' in response" % needle)
+
+    def assertJSONEqual(self, raw, expected_data, msg=None):
+        try:
+            data = json.loads(raw)
+        except ValueError:
+            self.fail("First argument is not valid JSON: %r" % raw)
+        if isinstance(expected_data, six.string_types):
+            try:
+                expected_data = json.loads(expected_data)
+            except ValueError:
+                self.fail("Second argument is not valid JSON: %r" % expected_data)
+        self.assertEqual(data, expected_data, msg=msg)
+
+    def assertXMLEqual(self, xml1, xml2, msg=None):
+        """
+        Asserts that two XML snippets are semantically the same.
+        Whitespace in most cases is ignored, and attribute ordering is not
+        significant. The passed-in arguments must be valid XML.
+        """
+        try:
+            result = compare_xml(xml1, xml2)
+        except Exception as e:
+            standardMsg = 'First or second argument is not valid XML\n%s' % e
+            self.fail(self._formatMessage(msg, standardMsg))
+        else:
+            if not result:
+                standardMsg = '%s != %s' % (safe_repr(xml1, True), safe_repr(xml2, True))
+                self.fail(self._formatMessage(msg, standardMsg))
+
+    def assertXMLNotEqual(self, xml1, xml2, msg=None):
+        """
+        Asserts that two XML snippets are not semantically equivalent.
+        Whitespace in most cases is ignored, and attribute ordering is not
+        significant. The passed-in arguments must be valid XML.
+        """
+        try:
+            result = compare_xml(xml1, xml2)
+        except Exception as e:
+            standardMsg = 'First or second argument is not valid XML\n%s' % e
+            self.fail(self._formatMessage(msg, standardMsg))
+        else:
+            if result:
+                standardMsg = '%s == %s' % (safe_repr(xml1, True), safe_repr(xml2, True))
+                self.fail(self._formatMessage(msg, standardMsg))
+
 
 class TransactionTestCase(SimpleTestCase):
 
@@ -464,9 +458,19 @@ class TransactionTestCase(SimpleTestCase):
               ROOT_URLCONF with it.
             * Clearing the mail test outbox.
         """
+        self.client = self.client_class()
         self._fixture_setup()
         self._urlconf_setup()
         mail.outbox = []
+
+    def _databases_names(self, include_mirrors=True):
+        # If the test case has a multi_db=True flag, act on all databases,
+        # including mirrors or not. Otherwise, just on the default DB.
+        if getattr(self, 'multi_db', False):
+            return [alias for alias in connections
+                    if include_mirrors or not connections[alias].settings_dict['TEST_MIRROR']]
+        else:
+            return [DEFAULT_DB_ALIAS]
 
     def _reset_sequences(self, db_name):
         conn = connections[db_name]
@@ -475,20 +479,13 @@ class TransactionTestCase(SimpleTestCase):
                 conn.ops.sequence_reset_by_name_sql(no_style(),
                                                     conn.introspection.sequence_list())
             if sql_list:
-                try:
+                with transaction.commit_on_success_unless_managed(using=db_name):
                     cursor = conn.cursor()
                     for sql in sql_list:
                         cursor.execute(sql)
-                except Exception:
-                    transaction.rollback_unless_managed(using=db_name)
-                    raise
-                transaction.commit_unless_managed(using=db_name)
 
     def _fixture_setup(self):
-        # If the test case has a multi_db=True flag, act on all databases.
-        # Otherwise, just on the default DB.
-        db_names = connections if getattr(self, 'multi_db', False) else [DEFAULT_DB_ALIAS]
-        for db_name in db_names:
+        for db_name in self._databases_names(include_mirrors=False):
             # Reset sequences
             if self.reset_sequences:
                 self._reset_sequences(db_name)
@@ -500,39 +497,11 @@ class TransactionTestCase(SimpleTestCase):
                              **{'verbosity': 0, 'database': db_name, 'skip_validation': True})
 
     def _urlconf_setup(self):
+        set_urlconf(None)
         if hasattr(self, 'urls'):
             self._old_root_urlconf = settings.ROOT_URLCONF
             settings.ROOT_URLCONF = self.urls
             clear_url_caches()
-
-    def __call__(self, result=None):
-        """
-        Wrapper around default __call__ method to perform common Django test
-        set up. This means that user-defined Test Cases aren't required to
-        include a call to super().setUp().
-        """
-        testMethod = getattr(self, self._testMethodName)
-        skipped = (getattr(self.__class__, "__unittest_skip__", False) or
-            getattr(testMethod, "__unittest_skip__", False))
-
-        if not skipped:
-            self.client = self.client_class()
-            try:
-                self._pre_setup()
-            except (KeyboardInterrupt, SystemExit):
-                raise
-            except Exception:
-                result.addError(self, sys.exc_info())
-                return
-        super(TransactionTestCase, self).__call__(result)
-        if not skipped:
-            try:
-                self._post_teardown()
-            except (KeyboardInterrupt, SystemExit):
-                raise
-            except Exception:
-                result.addError(self, sys.exc_info())
-                return
 
     def _post_teardown(self):
         """ Performs any post-test things. This includes:
@@ -554,14 +523,12 @@ class TransactionTestCase(SimpleTestCase):
             conn.close()
 
     def _fixture_teardown(self):
-        # If the test case has a multi_db=True flag, flush all databases.
-        # Otherwise, just flush default.
-        databases = connections if getattr(self, 'multi_db', False) else [DEFAULT_DB_ALIAS]
-        for db in databases:
+        for db in self._databases_names(include_mirrors=False):
             call_command('flush', verbosity=0, interactive=False, database=db,
                          skip_validation=True, reset_sequences=False)
 
     def _urlconf_teardown(self):
+        set_urlconf(None)
         if hasattr(self, '_old_root_urlconf'):
             settings.ROOT_URLCONF = self._old_root_urlconf
             clear_url_caches()
@@ -603,7 +570,7 @@ class TransactionTestCase(SimpleTestCase):
                 " code was %d (expected %d)" %
                     (response.status_code, status_code))
 
-            url = response['Location']
+            url = response.url
             scheme, netloc, path, query, fragment = urlsplit(url)
 
             redirect_response = response.client.get(path, QueryDict(query))
@@ -647,7 +614,12 @@ class TransactionTestCase(SimpleTestCase):
         self.assertEqual(response.status_code, status_code,
             msg_prefix + "Couldn't retrieve content: Response code was %d"
             " (expected %d)" % (response.status_code, status_code))
-        content = response.content.decode(response._charset)
+        text = force_text(text, encoding=response._charset)
+        if response.streaming:
+            content = b''.join(response.streaming_content)
+        else:
+            content = response.content
+        content = content.decode(response._charset)
         if html:
             content = assert_and_parse_html(self, content, None,
                 "Response's content is not valid HTML:")
@@ -682,6 +654,7 @@ class TransactionTestCase(SimpleTestCase):
         self.assertEqual(response.status_code, status_code,
             msg_prefix + "Couldn't retrieve content: Response code was %d"
             " (expected %d)" % (response.status_code, status_code))
+        text = force_text(text, encoding=response._charset)
         content = response.content.decode(response._charset)
         if html:
             content = assert_and_parse_html(self, content, None,
@@ -797,6 +770,12 @@ class TransactionTestCase(SimpleTestCase):
         items = six.moves.map(transform, qs)
         if not ordered:
             return self.assertEqual(set(items), set(values))
+        values = list(values)
+        # For example qs.iterator() could be passed as qs, but it does not
+        # have 'ordered' attribute.
+        if len(values) > 1 and hasattr(qs, 'ordered') and not qs.ordered:
+            raise ValueError("Trying to compare non-ordered queryset "
+                             "against more than one ordered values")
         return self.assertEqual(list(items), values)
 
     def assertNumQueries(self, num, func=None, *args, **kwargs):
@@ -834,19 +813,14 @@ class TestCase(TransactionTestCase):
 
         assert not self.reset_sequences, 'reset_sequences cannot be used on TestCase instances'
 
-        # If the test case has a multi_db=True flag, setup all databases.
-        # Otherwise, just use default.
-        db_names = connections if getattr(self, 'multi_db', False) else [DEFAULT_DB_ALIAS]
-
-        for db_name in db_names:
-            transaction.enter_transaction_management(using=db_name)
-            transaction.managed(True, using=db_name)
+        self.atomics = {}
+        for db_name in self._databases_names():
+            self.atomics[db_name] = transaction.atomic(using=db_name)
+            self.atomics[db_name].__enter__()
+        # Remove this when the legacy transaction management goes away.
         disable_transaction_methods()
 
-        from django.contrib.sites.models import Site
-        Site.objects.clear_cache()
-
-        for db in db_names:
+        for db in self._databases_names(include_mirrors=False):
             if hasattr(self, 'fixtures'):
                 call_command('loaddata', *self.fixtures,
                              **{
@@ -860,17 +834,12 @@ class TestCase(TransactionTestCase):
         if not connections_support_transactions():
             return super(TestCase, self)._fixture_teardown()
 
-        # If the test case has a multi_db=True flag, teardown all databases.
-        # Otherwise, just teardown default.
-        if getattr(self, 'multi_db', False):
-            databases = connections
-        else:
-            databases = [DEFAULT_DB_ALIAS]
-
+        # Remove this when the legacy transaction management goes away.
         restore_transaction_methods()
-        for db in databases:
-            transaction.rollback(using=db)
-            transaction.leave_transaction_management(using=db)
+        for db_name in reversed(self._databases_names()):
+            # Hack to force a rollback
+            connections[db_name].needs_rollback = True
+            self.atomics[db_name].__exit__(None, None, None)
 
 
 def _deferredSkip(condition, reason):
@@ -917,7 +886,9 @@ class QuietWSGIRequestHandler(WSGIRequestHandler):
         pass
 
 
-if sys.version_info >= (2, 7, 0):
+if sys.version_info >= (3, 3, 0):
+    _ImprovedEvent = threading.Event
+elif sys.version_info >= (2, 7, 0):
     _ImprovedEvent = threading._Event
 else:
     class _ImprovedEvent(threading._Event):
@@ -1050,7 +1021,6 @@ class LiveServerThread(threading.Thread):
         http requests.
         """
         if self.connections_override:
-            from django.db import connections
             # Override this thread's database connections with the ones
             # provided by the main thread.
             for alias, conn in self.connections_override.items():
@@ -1067,6 +1037,7 @@ class LiveServerThread(threading.Thread):
                         (self.host, port), QuietWSGIRequestHandler)
                 except WSGIServerException as e:
                     if (index + 1 < len(self.possible_ports) and
+                        hasattr(e.args[0], 'errno') and
                         e.args[0].errno == errno.EADDRINUSE):
                         # This port is already in use, so we go on and try with
                         # the next one in the list.
@@ -1119,7 +1090,7 @@ class LiveServerTestCase(TransactionTestCase):
         for conn in connections.all():
             # If using in-memory sqlite databases, pass the connections to
             # the server thread.
-            if (conn.settings_dict['ENGINE'] == 'django.db.backends.sqlite3'
+            if (conn.settings_dict['ENGINE'].rsplit('.', 1)[-1] in ('sqlite3', 'spatialite')
                 and conn.settings_dict['NAME'] == ':memory:'):
                 # Explicitly enable thread-shareability for this connection
                 conn.allow_thread_sharing = True
@@ -1147,8 +1118,8 @@ class LiveServerTestCase(TransactionTestCase):
                     for port in range(extremes[0], extremes[1] + 1):
                         possible_ports.append(port)
         except Exception:
-            raise ImproperlyConfigured('Invalid address ("%s") for live '
-                'server.' % specified_address)
+            msg = 'Invalid address ("%s") for live server.' % specified_address
+            six.reraise(ImproperlyConfigured, ImproperlyConfigured(msg), sys.exc_info()[2])
         cls.server_thread = LiveServerThread(
             host, possible_ports, connections_override)
         cls.server_thread.daemon = True
@@ -1171,7 +1142,7 @@ class LiveServerTestCase(TransactionTestCase):
 
         # Restore sqlite connections' non-sharability
         for conn in connections.all():
-            if (conn.settings_dict['ENGINE'] == 'django.db.backends.sqlite3'
+            if (conn.settings_dict['ENGINE'].rsplit('.', 1)[-1] in ('sqlite3', 'spatialite')
                 and conn.settings_dict['NAME'] == ':memory:'):
                 conn.allow_thread_sharing = False
 

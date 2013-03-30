@@ -4,7 +4,7 @@ import datetime
 import decimal
 
 from django.db import models
-from django.db.models.sql.constants import LOOKUP_SEP
+from django.db.models.constants import LOOKUP_SEP
 from django.db.models.deletion import Collector
 from django.db.models.related import RelatedObject
 from django.forms.forms import pretty_name
@@ -48,9 +48,9 @@ def prepare_lookup_value(key, value):
 def quote(s):
     """
     Ensure that primary key values do not confuse the admin URLs by escaping
-    any '/', '_' and ':' characters. Similar to urllib.quote, except that the
-    quoting is slightly different so that it doesn't get automatically
-    unquoted by the Web browser.
+    any '/', '_' and ':' and similarly problematic characters.
+    Similar to urllib.quote, except that the quoting is slightly different so
+    that it doesn't get automatically unquoted by the Web browser.
     """
     if not isinstance(s, six.string_types):
         return s
@@ -88,8 +88,7 @@ def flatten_fieldsets(fieldsets):
     field_names = []
     for name, opts in fieldsets:
         for field in opts['fields']:
-            # type checking feels dirty, but it seems like the best way here
-            if type(field) == tuple:
+            if isinstance(field, (list, tuple)):
                 field_names.extend(field)
             else:
                 field_names.append(field)
@@ -117,7 +116,7 @@ def get_deleted_objects(objs, opts, user, admin_site, using):
             admin_url = reverse('%s:%s_%s_change'
                                 % (admin_site.name,
                                    opts.app_label,
-                                   opts.object_name.lower()),
+                                   opts.model_name),
                                 None, (quote(obj._get_pk_val()),))
             p = '%s.%s' % (opts.app_label,
                            opts.get_delete_permission())
@@ -155,6 +154,9 @@ class NestedObjects(Collector):
             if source_attr:
                 self.add_edge(getattr(obj, source_attr), obj)
             else:
+                if obj._meta.proxy:
+                    # Take concrete model's instance to avoid mismatch in edges
+                    obj = obj._meta.concrete_model(pk=obj.pk)
                 self.add_edge(None, obj)
         try:
             return super(NestedObjects, self).collect(objs, source_attr=source_attr, **kwargs)
@@ -190,6 +192,13 @@ class NestedObjects(Collector):
         for root in self.edges.get(None, ()):
             roots.extend(self._nested(root, seen, format_callback))
         return roots
+
+    def can_fast_delete(self, *args, **kwargs):
+        """
+        We always want to load the objects into memory so that we can display
+        them to the user in confirm page.
+        """
+        return False
 
 
 def model_format_dict(obj):
