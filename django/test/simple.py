@@ -1,10 +1,6 @@
 """
 This module is pending deprecation as of Django 1.5 and will be removed in 1.7.
 
-When it is removed, the default value of the ``TEST_RUNNER`` setting in
-django.conf.global_settings should be changed to
-``django.test.runner.DjangoTestDiscoverRunner``.
-
 """
 import unittest as real_unittest
 import warnings
