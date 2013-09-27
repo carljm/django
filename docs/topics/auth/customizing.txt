@@ -835,14 +835,16 @@ handler. Instead, you must register the handler with the resulting User model.
 See :doc:`/topics/signals` for more information on registering an sending
 signals.
 
+.. _testing-custom-users:
+
 Custom users and testing/fixtures
 ---------------------------------
 
-If you are writing an application that interacts with the User model, you must
-take some precautions to ensure that your test suite will run regardless of
-the User model that is being used by a project. Any test that instantiates an
-instance of User will fail if the User model has been swapped out. This
-includes any attempt to create an instance of User with a fixture.
+If you are writing a reusable application that interacts with the User model,
+you must take some precautions to ensure that your test suite will run
+regardless of the User model that is being used by a project. Any test that
+instantiates an instance of User will fail if the User model has been swapped
+out. This includes any attempt to create an instance of User with a fixture.
 
 To ensure that your test suite will pass in any project configuration,
 ``django.contrib.auth.tests.utils`` defines a ``@skipIfCustomUser`` decorator.
@@ -852,21 +854,14 @@ single test, or to an entire test class.
 
 Depending on your application, tests may also be needed to be added to ensure
 that the application works with *any* user model, not just the default User
-model. To assist with this, Django provides two substitute user models that
-can be used in test suites:
+model.
 
-* ``django.contrib.auth.tests.custom_user.CustomUser``, a custom user
-  model that uses an ``email`` field as the username, and has a basic
-  admin-compliant permissions setup
-
-* ``django.contrib.auth.tests.custom_user.ExtensionUser``, a custom
-  user model that extends ``django.contrib.auth.models.AbstractUser``,
-  adding a ``date_of_birth`` field.
-
-You can then use the ``@override_settings`` decorator to make that test run
-with the custom User model. For example, here is a skeleton for a test that
-would test three possible User models -- the default, plus the two User
-models provided by ``auth`` app::
+You can define a custom user model, as documented above, in one of your test
+files (or in the ``models.py`` of an app that you only include in
+:setting:`INSTALLED_APPS` during testing) then use the ``@override_settings``
+decorator to make that test run with your custom User model. For example, here
+is a skeleton for a test that would test two possible User models -- the
+default, plus a custom one you've defined::
 
     from django.contrib.auth.tests.utils import skipIfCustomUser
     from django.test import TestCase, override_settings
@@ -878,14 +873,9 @@ models provided by ``auth`` app::
             "Run tests for the normal user model"
             self.assertSomething()
 
-        @override_settings(AUTH_USER_MODEL='auth.CustomUser')
+        @override_settings(AUTH_USER_MODEL='myapp.CustomUser')
         def test_custom_user(self):
-            "Run tests for a custom user model with email-based authentication"
-            self.assertSomething()
-
-        @override_settings(AUTH_USER_MODEL='auth.ExtensionUser')
-        def test_extension_user(self):
-            "Run tests for a simple extension of the built-in User."
+            "Run tests for a custom user model"
             self.assertSomething()
 
 

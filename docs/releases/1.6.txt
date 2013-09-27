@@ -435,6 +435,15 @@ doctest utilities. These utilities are deprecated and will be removed in Django
 1.8; doctest suites should be updated to work with the standard library's
 doctest module (or converted to unittest-compatible tests).
 
+The documentation for Django 1.5 recommended that reusable apps needing to test
+against custom user models reuse the ``CustomUser`` and ``ExtensionUser``
+test-only models in the ``django.contrib.auth`` tests. With the new test
+runner, the ``django.contrib.auth`` tests are not imported or run by default
+from your project, therefore these sample custom user models are not
+installed. Instead you can define your own sample custom user model in your
+tests, if needed. See the :ref:`custom users and testing
+<testing-custom-users>` docs.
+
 If you wish to delay updates to your test suite, you can set your
 :setting:`TEST_RUNNER` setting to ``django.test.simple.DjangoTestSuiteRunner``
 to fully restore the old test behavior. ``DjangoTestSuiteRunner`` is deprecated
