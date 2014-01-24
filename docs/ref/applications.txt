@@ -78,6 +78,23 @@ to determine which application this configuration applies to. You can define
 any attributes documented in the :class:`~django.apps.AppConfig` API
 reference.
 
+You can make your application load this :class:`~django.apps.AppConfig`
+subclass by default as follows::
+
+    # rock_n_roll/__init__.py
+
+    default_app_config = 'rock_n_roll.apps.RockNRollConfig'
+
+That will cause ``RockNRollConfig`` to be used when :settings:`INSTALLED_APPS`
+just contains ``'rock_n_roll'``. Of course, you can also tell your users to
+put ``'rock_n_roll.apps.RockNRollConfig'`` in their :settings:`INSTALLED_APPS`
+setting.
+
+This feature is particularly helpful when adding support for Django 1.7 to
+your pluggable application. If you don't trust your users to read release
+notes and update :settings:`INSTALLED_APPS` correctly, you can provide a
+suitable app config class with ``default_app_config``.
+
 For application users
 ---------------------
 
